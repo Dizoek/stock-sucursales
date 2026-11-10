@@ -1,0 +1,62 @@
+name: Stock por sucursal (Bsale → Shopify)
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"        # cada 10 min (GitHub puede atrasarlo unos minutos)
+  workflow_dispatch:               # botón "Run workflow" para pruebas manuales
+    inputs:
+      modo:
+        description: "Qué ejecutar"
+        type: choice
+        default: "prueba (no escribe)"
+        options:
+          - "prueba (no escribe)"
+          - "un SKU (escribe)"
+          - "completo (escribe)"
+      sku:
+        description: "SKU para los modos de prueba / un SKU"
+        default: "3756"
+
+concurrency:
+  group: sync-stock
+  cancel-in-progress: false
+
+permissions:
+  contents: write                  # solo para el commit de mantención mensual
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      BSALE_TOKEN: ${{ secrets.BSALE_TOKEN }}
+      SHOPIFY_CLIENT_ID: ${{ secrets.SHOPIFY_CLIENT_ID }}
+      SHOPIFY_CLIENT_SECRET: ${{ secrets.SHOPIFY_CLIENT_SECRET }}
+      SHOPIFY_SHOP: mrmc81-1m.myshopify.com
+      BSALE_OFFICES: "1,2,5"
+      MODO: ${{ inputs.modo }}
+      SKU: ${{ inputs.sku }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests
+      - name: Sincronizar
+        run: |
+          case "$MODO" in
+            "prueba (no escribe)") python sync.py --sku "$SKU" --dry-run ;;
+            "un SKU (escribe)")    python sync.py --sku "$SKU" ;;
+            *)                     python sync.py --full ;;
+          esac
+      - name: Mantener activo el horario
+        # GitHub pausa los horarios de repos sin actividad por 60 días: un commit al mes lo evita.
+        if: github.event_name == 'schedule'
+        run: |
+          ultimo=$(git log -1 --format=%ct)
+          if [ $(( $(date +%s) - ultimo )) -gt 2592000 ]; then
+            date -u +%F > .ultima-actividad
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .ultima-actividad && git commit -qm "Mantención automática" && git push -q
+          fi
