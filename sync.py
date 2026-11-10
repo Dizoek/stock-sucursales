@@ -62,21 +62,23 @@ def qty(item):
 
 
 def bsale_all_stock():
-    """{sku: {officeId: cantidad}} para las sucursales configuradas."""
+    """{sku: {officeId: cantidad}} para las sucursales configuradas.
+    Se pagina con offset propio: el enlace "next" de Bsale no conserva el expand."""
     stock = {}
     for office in OFFICES:
-        data = bsale_get("stocks.json", officeid=office, limit=50, expand="[variant]")
-        n = 0
+        n, offset = 0, 0
         while True:
-            for it in data.get("items", []):
+            data = bsale_get("stocks.json", officeid=office, limit=50, offset=offset,
+                             expand="[variant]")
+            items = data.get("items", [])
+            for it in items:
                 code = ((it.get("variant") or {}).get("code") or "").strip()
                 if code:
                     stock.setdefault(code, {})[office] = qty(it)
                     n += 1
-            nxt = data.get("next")
-            if not nxt:
+            offset += len(items)
+            if not items or offset >= int(data.get("count") or 0):
                 break
-            data = bsale_get(nxt)
         log(f"Bsale sucursal {office}: {n} registros")
     return stock
 
@@ -211,6 +213,12 @@ def sync(sku=None, dry_run=False):
                     log(f"SKU {s}: {cur} -> {json.dumps(new)}")
 
     sin_shopify = sorted(set(bsale) - set(shop)) if not sku else []
+    # Freno de seguridad: si Bsale devolvió muy poco, no se escribe nada (evita poner
+    # «sin stock» en toda la tienda por una falla de la API o de la paginación).
+    if not sku and shop and len(sin_bsale) > len(shop) * 0.5:
+        log(f"ABORTADO: {len(sin_bsale)} de {len(shop)} SKU de Shopify no aparecen en Bsale. "
+            "No se escribió nada.")
+        return False
     errores = write_metafields(changes, dry_run)
 
     log(f"{'[dry-run] ' if dry_run else ''}{len(changes)} variantes "
